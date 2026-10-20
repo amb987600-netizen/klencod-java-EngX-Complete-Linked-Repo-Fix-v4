@@ -1,0 +1,84 @@
+name: Build EngX Android APK
+run-name: EngX Capacitor APK · ${{ github.ref_name }} · ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engx-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+      - name: Locate Capacitor project (not Flutter)
+        id: project
+        shell: bash
+        run: |
+          if [ -f package.json ] && [ -f capacitor.config.ts ] && [ -f android/settings.gradle ]; then
+            root='.'
+          elif [ -f EngX/package.json ] && [ -f EngX/capacitor.config.ts ] && [ -f EngX/android/settings.gradle ]; then
+            root='EngX'
+          else
+            echo '::error::EngX project root not found. Extract the ZIP contents, including hidden .github files; do not upload the ZIP itself or select a Flutter template.'
+            exit 1
+          fi
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "EngX Capacitor project: $root; Flutter must not be used."
+          echo 'ENGX_CAPACITOR_REPO_FIX_V2'
+          echo "Commit: $GITHUB_SHA; npm root: $root; Gradle root: $root/android"
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ steps.project.outputs.root }}/package-lock.json
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # Override v3's obsolete default "tools platform-tools".
+          # Command-line tools are provided by the action itself.
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Install web dependencies
+        working-directory: ${{ steps.project.outputs.root }}
+        run: npm ci
+      - name: Check Android prerequisites
+        working-directory: ${{ steps.project.outputs.root }}
+        run: npm run android:doctor
+      - name: Run regression tests
+        working-directory: ${{ steps.project.outputs.root }}
+        run: npm test
+      - name: Build web app and sync Capacitor
+        working-directory: ${{ steps.project.outputs.root }}
+        run: npm run android:sync
+      # Gradle's project root is android/, not the npm repository root.
+      # Invoking android/gradlew from the repository root alone is not enough.
+      - name: Assemble debug APK from Android project
+        working-directory: ${{ steps.project.outputs.root }}/android
+        shell: bash
+        run: |
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle/wrapper/gradle-wrapper.jar
+          sh ./gradlew --no-daemon :app:assembleDebug
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: EngX-debug-APK
+          path: ${{ steps.project.outputs.root }}/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
